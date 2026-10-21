@@ -1,0 +1,117 @@
+{
+  "users": [
+    {
+      "id": "USR-01",
+      "prontuario": "SP304912",
+      "name": "João Silva",
+      "role": "Técnico Operador IFSP",
+      "passwordHash": "8c6976e5b5410415bde908bd4dee15dfb167a9c873fc4bb8a81f6f2ab448a918"
+    },
+    {
+      "id": "USR-02",
+      "prontuario": "PROF-CARLOS",
+      "name": "Prof. Carlos Mendes",
+      "role": "Supervisor do Laboratório",
+      "passwordHash": "8c6976e5b5410415bde908bd4dee15dfb167a9c873fc4bb8a81f6f2ab448a918"
+    }
+  ],
+  "machine": {
+    "id": "LASER-CO2-IFSP-01",
+    "name": "Corte a Laser CO2 IFSP-Salto",
+    "model": "CL-9060 Pro (Tubo CO2 80W Peak)",
+    "campus": "Câmpus Salto - Bloco C / Lab. Fabricação",
+    "status": "RODANDO",
+    "currentOsCode": "OS-2026-0157",
+    "currentOperator": "João Silva (Técnico IFSP)",
+    "currentRequester": "Prof. Carlos Mendes",
+    "currentMaterial": "MDF 3.0mm CRYS",
+    "totalEstimatedTime": "01h 45min",
+    "progress": 68.5,
+    "esp32Ip": "192.168.1.142",
+    "esp32Status": "CONECTADO",
+    "esp32Rssi": -58,
+    "laserTubeHours": 342.5,
+    "chillerTemp": 20.4,
+    "currentAmp": 4.25,
+    "powerKw": 0.935,
+    "vibrationG": 0.16,
+    "waterFlowLmin": 4.8,
+    "airPressureBar": 2.1,
+    "hoodOpen": false,
+    "flameSensor": "OK",
+    "relays": {
+      "laserEnable": true,
+      "chillerPump": true,
+      "airSolenoid": true,
+      "emergencyCutoff": false
+    }
+  },
+  "workOrders": [
+    {
+      "code": "OS-2026-0157",
+      "materialType": "MDF 3.0mm CRYS",
+      "quantity": "2 chapas (600x400mm)",
+      "estimatedTime": "01h 45min",
+      "realCuttingSeconds": 4320,
+      "requester": "Prof. Carlos Mendes (Lab. Mecânica)",
+      "operator": "João Silva (Técnico IFSP)",
+      "status": "EM_ANDAMENTO",
+      "createdAt": "03/09/2026 08:15",
+      "laserPower": 65,
+      "laserSpeed": 18,
+      "completedPercentage": 68,
+      "notes": "Corte de peças para protótipo de braço robótico."
+    },
+    {
+      "code": "OS-2026-0156",
+      "materialType": "Acrílico Cristal 5.0mm",
+      "quantity": "1 chapa (500x300mm)",
+      "estimatedTime": "40min",
+      "realCuttingSeconds": 2280,
+      "requester": "Mariana Costa (TCC Eng. Controle)",
+      "operator": "Carlos Andrade",
+      "status": "CONCLUIDA",
+      "createdAt": "03/09/2026 07:30",
+      "laserPower": 75,
+      "laserSpeed": 12,
+      "completedPercentage": 100,
+      "notes": "Painel frontal transparente para gabinete."
+    },
+    {
+      "code": "OS-2026-0155",
+      "materialType": "PETG 1.0mm Transparente",
+      "quantity": "3 chapas (400x300mm)",
+      "estimatedTime": "25min",
+      "realCuttingSeconds": 1350,
+      "requester": "Equipe Bajabots IFSP",
+      "operator": "Rafael Martins",
+      "status": "CONCLUIDA",
+      "createdAt": "02/09/2026 16:40",
+      "laserPower": 45,
+      "laserSpeed": 25,
+      "completedPercentage": 100,
+      "notes": "Viseiras e acopladores leves."
+    },
+    {
+      "code": "OS-2026-0158",
+      "materialType": "Papelão Hidráulico 1.5mm",
+      "quantity": "5 folhas (300x300mm)",
+      "estimatedTime": "15min",
+      "realCuttingSeconds": 0,
+      "requester": "Lucas Almeida (Edificações)",
+      "operator": "João Silva (Técnico IFSP)",
+      "status": "AGUARDANDO",
+      "createdAt": "03/09/2026 09:00",
+      "laserPower": 35,
+      "laserSpeed": 30,
+      "completedPercentage": 0,
+      "notes": "Juntas de vedação para ensaio."
+    }
+  ],
+  "cycleStats": {
+    "cycleStartTime": "08:00",
+    "totalOnTimeSeconds": 19120,
+    "actualCuttingTimeSeconds": 13512,
+    "idleTimeSeconds": 5608
+  }
+}

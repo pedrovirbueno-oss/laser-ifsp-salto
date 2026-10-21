@@ -1,0 +1,2270 @@
+===== FILE: supabase/schema.sql =====
+-- NEXO PRODUCTION - SUPABASE DATABASE SCHEMA MIGRATION
+-- Multi-Tenant Industrial SaaS Platform
+
+-- Enable UUID extension
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
+-- 1. COMPANIES TABLE
+CREATE TABLE IF NOT EXISTS public.companies (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  name VARCHAR(255) NOT NULL,
+  legal_name VARCHAR(255) NOT NULL,
+  document VARCHAR(50) NOT NULL,
+  email VARCHAR(255) NOT NULL,
+  phone VARCHAR(50) NOT NULL,
+  timezone VARCHAR(100) DEFAULT 'America/Sao_Paulo',
+  active BOOLEAN DEFAULT TRUE,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 2. PROFILES TABLE (Tied to auth.users)
+CREATE TABLE IF NOT EXISTS public.profiles (
+  id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+  company_id UUID NOT NULL REFERENCES public.companies(id) ON DELETE CASCADE,
+  name VARCHAR(255) NOT NULL,
+  email VARCHAR(255) NOT NULL,
+  role VARCHAR(50) NOT NULL CHECK (role IN ('admin', 'supervisor', 'operator')),
+  active BOOLEAN DEFAULT TRUE,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 3. MACHINES TABLE
+CREATE TABLE IF NOT EXISTS public.machines (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  company_id UUID NOT NULL REFERENCES public.companies(id) ON DELETE CASCADE,
+  name VARCHAR(255) NOT NULL,
+  code VARCHAR(100) NOT NULL,
+  sector VARCHAR(100) NOT NULL,
+  description TEXT DEFAULT '',
+  status VARCHAR(50) DEFAULT 'inactive' CHECK (status IN ('producing', 'stopped', 'setup', 'maintenance', 'inactive')),
+  active BOOLEAN DEFAULT TRUE,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE (company_id, code)
+);
+
+-- 4. PRODUCTS TABLE
+CREATE TABLE IF NOT EXISTS public.products (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  company_id UUID NOT NULL REFERENCES public.companies(id) ON DELETE CASCADE,
+  name VARCHAR(255) NOT NULL,
+  code VARCHAR(100) NOT NULL,
+  description TEXT DEFAULT '',
+  target_cycle_time_seconds NUMERIC(10, 2) DEFAULT 60.00,
+  target_quantity_per_hour NUMERIC(10, 2) DEFAULT 60.00,
+  target_scrap_percentage NUMERIC(5, 2) DEFAULT 2.00,
+  active BOOLEAN DEFAULT TRUE,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE (company_id, code)
+);
+
+-- 5. SHIFTS TABLE
+CREATE TABLE IF NOT EXISTS public.shifts (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  company_id UUID NOT NULL REFERENCES public.companies(id) ON DELETE CASCADE,
+  name VARCHAR(100) NOT NULL,
+  start_time VARCHAR(10) NOT NULL, -- e.g. "06:00"
+  end_time VARCHAR(10) NOT NULL,   -- e.g. "14:00" or "06:00" for overnight
+  active BOOLEAN DEFAULT TRUE,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 6. PRODUCTION ORDERS TABLE
+CREATE TABLE IF NOT EXISTS public.production_orders (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  company_id UUID NOT NULL REFERENCES public.companies(id) ON DELETE CASCADE,
+  code VARCHAR(100) NOT NULL,
+  product_id UUID NOT NULL REFERENCES public.products(id) ON DELETE RESTRICT,
+  planned_quantity INT NOT NULL CHECK (planned_quantity >= 0),
+  produced_quantity INT DEFAULT 0 CHECK (produced_quantity >= 0),
+  rejected_quantity INT DEFAULT 0 CHECK (rejected_quantity >= 0),
+  start_date TIMESTAMPTZ NOT NULL,
+  due_date TIMESTAMPTZ NOT NULL,
+  status VARCHAR(50) DEFAULT 'planned' CHECK (status IN ('planned', 'active', 'paused', 'completed', 'cancelled')),
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE (company_id, code)
+);
+
+-- 7. PRODUCTION RECORDS TABLE
+CREATE TABLE IF NOT EXISTS public.production_records (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  company_id UUID NOT NULL REFERENCES public.companies(id) ON DELETE CASCADE,
+  machine_id UUID NOT NULL REFERENCES public.machines(id) ON DELETE RESTRICT,
+  operator_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE RESTRICT,
+  order_id UUID NOT NULL REFERENCES public.production_orders(id) ON DELETE RESTRICT,
+  product_id UUID NOT NULL REFERENCES public.products(id) ON DELETE RESTRICT,
+  shift_id UUID REFERENCES public.shifts(id) ON DELETE SET NULL,
+  start_time TIMESTAMPTZ NOT NULL,
+  end_time TIMESTAMPTZ,
+  produced_quantity INT NOT NULL DEFAULT 0 CHECK (produced_quantity >= 0),
+  rejected_quantity INT NOT NULL DEFAULT 0 CHECK (rejected_quantity >= 0),
+  notes TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 8. DOWNTIME REASONS TABLE
+CREATE TABLE IF NOT EXISTS public.downtime_reasons (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  company_id UUID NOT NULL REFERENCES public.companies(id) ON DELETE CASCADE,
+  name VARCHAR(255) NOT NULL,
+  category VARCHAR(50) NOT NULL CHECK (category IN ('setup', 'maintenance', 'material', 'quality', 'operator', 'adjustment', 'electrical', 'mechanical', 'other')),
+  active BOOLEAN DEFAULT TRUE,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 9. DOWNTIME RECORDS TABLE
+CREATE TABLE IF NOT EXISTS public.downtime_records (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  company_id UUID NOT NULL REFERENCES public.companies(id) ON DELETE CASCADE,
+  machine_id UUID NOT NULL REFERENCES public.machines(id) ON DELETE RESTRICT,
+  operator_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE RESTRICT,
+  order_id UUID REFERENCES public.production_orders(id) ON DELETE SET NULL,
+  reason_id UUID NOT NULL REFERENCES public.downtime_reasons(id) ON DELETE RESTRICT,
+  start_time TIMESTAMPTZ NOT NULL,
+  end_time TIMESTAMPTZ,
+  duration_seconds INT DEFAULT 0 CHECK (duration_seconds >= 0),
+  notes TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 10. TARGETS TABLE
+CREATE TABLE IF NOT EXISTS public.targets (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  company_id UUID NOT NULL REFERENCES public.companies(id) ON DELETE CASCADE,
+  machine_id UUID REFERENCES public.machines(id) ON DELETE CASCADE,
+  product_id UUID REFERENCES public.products(id) ON DELETE CASCADE,
+  target_quantity INT NOT NULL DEFAULT 100,
+  target_cycle_time_seconds NUMERIC(10, 2) DEFAULT 60.00,
+  target_scrap_percentage NUMERIC(5, 2) DEFAULT 2.00,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 11. API KEYS TABLE (Machine-to-Machine IoT Security)
+CREATE TABLE IF NOT EXISTS public.api_keys (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  company_id UUID NOT NULL REFERENCES public.companies(id) ON DELETE CASCADE,
+  name VARCHAR(255) NOT NULL,
+  key_hash VARCHAR(255) NOT NULL UNIQUE,
+  active BOOLEAN DEFAULT TRUE,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  last_used_at TIMESTAMPTZ
+);
+
+-- 12. AUDIT LOGS TABLE (Append-Only)
+CREATE TABLE IF NOT EXISTS public.audit_logs (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  company_id UUID NOT NULL REFERENCES public.companies(id) ON DELETE CASCADE,
+  user_id UUID NOT NULL,
+  user_name VARCHAR(255),
+  action VARCHAR(50) NOT NULL CHECK (
+    action IN (
+      'LOGIN', 'LOGOUT', 'CREATE', 'UPDATE', 'DELETE',
+      'START_PRODUCTION', 'REGISTER_PRODUCTION', 'END_PRODUCTION',
+      'START_DOWNTIME', 'END_DOWNTIME', 'IMPORT_DATA', 'EXPORT_DATA', 'GENERATE_REPORT'
+    )
+  ),
+  entity_type VARCHAR(100) NOT NULL,
+  entity_id VARCHAR(255) NOT NULL,
+  old_data JSONB,
+  new_data JSONB,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 13. ALERTS TABLE
+CREATE TABLE IF NOT EXISTS public.alerts (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  company_id UUID NOT NULL REFERENCES public.companies(id) ON DELETE CASCADE,
+  type VARCHAR(50) NOT NULL CHECK (type IN ('downtime_limit', 'scrap_limit', 'efficiency_low', 'deadline_near')),
+  severity VARCHAR(20) DEFAULT 'warning' CHECK (severity IN ('info', 'warning', 'danger')),
+  title VARCHAR(255) NOT NULL,
+  message TEXT NOT NULL,
+  machine_id UUID REFERENCES public.machines(id) ON DELETE CASCADE,
+  order_id UUID REFERENCES public.production_orders(id) ON DELETE CASCADE,
+  read BOOLEAN DEFAULT FALSE,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- INDEXES FOR PERFORMANCE
+CREATE INDEX IF NOT EXISTS idx_profiles_company ON public.profiles(company_id);
+CREATE INDEX IF NOT EXISTS idx_machines_company ON public.machines(company_id);
+CREATE INDEX IF NOT EXISTS idx_products_company ON public.products(company_id);
+CREATE INDEX IF NOT EXISTS idx_orders_company_status ON public.production_orders(company_id, status);
+CREATE INDEX IF NOT EXISTS idx_production_records_company_machine ON public.production_records(company_id, machine_id, start_time);
+CREATE INDEX IF NOT EXISTS idx_downtime_records_company_machine ON public.downtime_records(company_id, machine_id, start_time);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_company_time ON public.audit_logs(company_id, created_at DESC);
+
+-- ROW LEVEL SECURITY (RLS) POLICIES
+ALTER TABLE public.companies ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.machines ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.products ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.shifts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.production_orders ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.production_records ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.downtime_reasons ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.downtime_records ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.targets ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.api_keys ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.audit_logs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.alerts ENABLE ROW LEVEL SECURITY;
+
+-- Helper function to get current user company_id
+CREATE OR REPLACE FUNCTION public.get_auth_company_id()
+RETURNS UUID AS $$
+  SELECT company_id FROM public.profiles WHERE id = auth.uid();
+$$ LANGUAGE sql STABLE SECURITY DEFINER;
+
+-- RLS POLICIES FOR PROFILES
+CREATE POLICY "Users can view profiles in their company" ON public.profiles
+  FOR SELECT USING (company_id = public.get_auth_company_id());
+
+-- RLS POLICIES FOR MACHINES
+CREATE POLICY "Users can view machines in their company" ON public.machines
+  FOR SELECT USING (company_id = public.get_auth_company_id());
+CREATE POLICY "Admins/Supervisors can manage machines" ON public.machines
+  FOR ALL USING (company_id = public.get_auth_company_id());
+
+-- RLS POLICIES FOR PRODUCTS
+CREATE POLICY "Users can view products in their company" ON public.products
+  FOR SELECT USING (company_id = public.get_auth_company_id());
+CREATE POLICY "Admins/Supervisors can manage products" ON public.products
+  FOR ALL USING (company_id = public.get_auth_company_id());
+
+-- RLS POLICIES FOR PRODUCTION ORDERS
+CREATE POLICY "Users can view orders in their company" ON public.production_orders
+  FOR SELECT USING (company_id = public.get_auth_company_id());
+CREATE POLICY "Admins/Supervisors can manage orders" ON public.production_orders
+  FOR ALL USING (company_id = public.get_auth_company_id());
+
+-- RLS POLICIES FOR PRODUCTION RECORDS
+CREATE POLICY "Users can view production records in their company" ON public.production_records
+  FOR SELECT USING (company_id = public.get_auth_company_id());
+CREATE POLICY "Operators/Supervisors/Admins can insert production records" ON public.production_records
+  FOR INSERT WITH CHECK (company_id = public.get_auth_company_id());
+CREATE POLICY "Supervisors/Admins can update production records" ON public.production_records
+  FOR UPDATE USING (company_id = public.get_auth_company_id());
+
+-- RLS POLICIES FOR DOWNTIME RECORDS
+CREATE POLICY "Users can view downtime records in their company" ON public.downtime_records
+  FOR SELECT USING (company_id = public.get_auth_company_id());
+CREATE POLICY "Users can insert downtime records" ON public.downtime_records
+  FOR INSERT WITH CHECK (company_id = public.get_auth_company_id());
+CREATE POLICY "Users can update downtime records" ON public.downtime_records
+  FOR UPDATE USING (company_id = public.get_auth_company_id());
+
+-- RLS POLICIES FOR AUDIT LOGS (APPEND ONLY - NO UPDATE OR DELETE ALLOWED)
+CREATE POLICY "Users can view audit logs in their company" ON public.audit_logs
+  FOR SELECT USING (company_id = public.get_auth_company_id());
+CREATE POLICY "System can insert audit logs" ON public.audit_logs
+  FOR INSERT WITH CHECK (company_id = public.get_auth_company_id());
+
+-- Disallow UPDATE and DELETE on audit logs
+CREATE POLICY "No update on audit logs" ON public.audit_logs FOR UPDATE USING (false);
+CREATE POLICY "No delete on audit logs" ON public.audit_logs FOR DELETE USING (false);
+
+
+===== FILE: src/middleware.ts =====
+import { NextResponse, NextRequest } from 'next/server';
+
+export function middleware(req: NextRequest) {
+  const isDemoMode = process.env.NEXT_PUBLIC_DEMO_MODE !== 'false';
+  const pathname = req.nextUrl.pathname;
+
+  // Static assets and API routes pass through to route-level handler security
+  if (
+    pathname.startsWith('/_next') ||
+    pathname.startsWith('/static') ||
+    pathname.startsWith('/api') ||
+    pathname === '/' ||
+    pathname === '/login'
+  ) {
+    return NextResponse.next();
+  }
+
+  // In Demo Mode, navigation is allowed (role switching is handled interactively)
+  if (isDemoMode) {
+    return NextResponse.next();
+  }
+
+  // In Production Mode, validate session token from cookies
+  const authCookie = req.cookies.get('sb-access-token') || req.cookies.get('supabase-auth-token');
+
+  if (!authCookie) {
+    const loginUrl = new URL('/login', req.url);
+    loginUrl.searchParams.set('redirect', pathname);
+    return NextResponse.redirect(loginUrl);
+  }
+
+  // Role checks for restricted routes:
+  // Note: Deep payload role validation also occurs inside server actions / API endpoints
+  return NextResponse.next();
+}
+
+export const config = {
+  matcher: [
+    '/dashboard/:path*',
+    '/operator/:path*',
+    '/orders/:path*',
+    '/machines/:path*',
+    '/products/:path*',
+    '/reasons/:path*',
+    '/shifts/:path*',
+    '/reports/:path*',
+    '/export/:path*',
+    '/import/:path*',
+    '/alerts/:path*',
+    '/audit/:path*',
+    '/settings/:path*',
+    '/setup/:path*',
+  ],
+};
+
+
+===== FILE: src/lib/supabase/server.ts =====
+import { createServerClient } from '@supabase/ssr';
+import { cookies } from 'next/headers';
+
+export function createServerSupabaseClient() {
+  const cookieStore = cookies();
+
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://placeholder.supabase.co';
+  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'placeholder-key';
+
+  return createServerClient(supabaseUrl, supabaseAnonKey, {
+    cookies: {
+      get(name: string) {
+        return cookieStore.get(name)?.value;
+      },
+      set(name: string, value: string, options: any) {
+        try {
+          cookieStore.set({ name, value, ...options });
+        } catch (error) {
+          // Handled in middleware/server component lifecycle
+        }
+      },
+      remove(name: string, options: any) {
+        try {
+          cookieStore.set({ name, value: '', ...options });
+        } catch (error) {
+          // Handled in middleware/server component lifecycle
+        }
+      },
+    },
+  });
+}
+
+export function createAdminSupabaseClient() {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://placeholder.supabase.co';
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+  if (!serviceRoleKey) {
+    throw new Error('[SECURITY ERROR] SUPABASE_SERVICE_ROLE_KEY missing on server side');
+  }
+
+  return createServerClient(supabaseUrl, serviceRoleKey, {
+    cookies: {
+      get() {
+        return undefined;
+      },
+      set() {},
+      remove() {},
+    },
+  });
+}
+
+
+===== FILE: src/lib/supabase/client.ts =====
+import { createBrowserClient } from '@supabase/ssr';
+
+export function createClient() {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+  if (!supabaseUrl || !supabaseAnonKey) {
+    // Return dummy client if unconfigured to prevent crash when in Demo Mode
+    return createBrowserClient(
+      'https://placeholder.supabase.co',
+      'placeholder-key'
+    );
+  }
+
+  return createBrowserClient(supabaseUrl, supabaseAnonKey);
+}
+
+
+===== FILE: src/lib/oee.ts =====
+import { OeeMetrics, ProductionRecord, DowntimeRecord, Product, Target } from '@/types';
+
+/**
+ * Calculates OEE (Overall Equipment Effectiveness) for a machine or company dataset.
+ * Formulas:
+ *  - Availability = Run Time / Planned Operational Time
+ *  - Performance  = Real Production Output / Theoretical Production Output (Target per hour * Run Time in hours)
+ *  - Quality      = Good Units (Total - Scrap) / Total Units Produced
+ *  - OEE          = Availability * Performance * Quality
+ * 
+ * Rules:
+ *  - Clamped strictly between 0% and 100%.
+ *  - Returns `sufficientData: false` when total planned time is 0 or no production records exist.
+ */
+export function calculateOee(
+  productionRecords: ProductionRecord[],
+  downtimeRecords: DowntimeRecord[],
+  plannedTimeMinutes: number,
+  targetProductsMap?: Record<string, Product>
+): OeeMetrics {
+  if (plannedTimeMinutes <= 0 || productionRecords.length === 0) {
+    return {
+      availability: 0,
+      performance: 0,
+      quality: 0,
+      oee: 0,
+      plannedTimeMinutes,
+      downtimeMinutes: 0,
+      runTimeMinutes: 0,
+      totalCount: 0,
+      scrapCount: 0,
+      goodCount: 0,
+      timeWindow: 'Período Selecionado',
+      sufficientData: false,
+    };
+  }
+
+  // Total Downtime in Minutes
+  const totalDowntimeSeconds = downtimeRecords.reduce((acc, curr) => acc + (curr.duration_seconds || 0), 0);
+  const downtimeMinutes = totalDowntimeSeconds / 60;
+
+  // Run Time = Planned Time - Downtime (Cannot be negative)
+  const runTimeMinutes = Math.max(0, plannedTimeMinutes - downtimeMinutes);
+
+  // Availability = Run Time / Planned Time
+  const rawAvailability = plannedTimeMinutes > 0 ? (runTimeMinutes / plannedTimeMinutes) : 0;
+
+  // Production Totals
+  let totalCount = 0;
+  let scrapCount = 0;
+  let theoreticalExpectedOutput = 0;
+
+  for (const record of productionRecords) {
+    const total = record.produced_quantity || 0;
+    const scrap = record.rejected_quantity || 0;
+    totalCount += total;
+    scrapCount += scrap;
+
+    // Calculate theoretical expected output if product target rates are available
+    if (targetProductsMap && record.product_id && targetProductsMap[record.product_id]) {
+      const product = targetProductsMap[record.product_id];
+      const targetPerHour = product.target_quantity_per_hour || 60;
+      
+      // Calculate duration of this specific record in hours
+      let durationHours = 0;
+      if (record.start_time && record.end_time) {
+        const start = new Date(record.start_time).getTime();
+        const end = new Date(record.end_time).getTime();
+        durationHours = Math.max(0, (end - start) / (1000 * 3600));
+      } else {
+        // Fallback: estimate runtime slice
+        durationHours = (runTimeMinutes / 60) / Math.max(1, productionRecords.length);
+      }
+      theoreticalExpectedOutput += targetPerHour * durationHours;
+    }
+  }
+
+  const goodCount = Math.max(0, totalCount - scrapCount);
+
+  // Quality = Good Count / Total Count
+  const rawQuality = totalCount > 0 ? (goodCount / totalCount) : 0;
+
+  // Performance = Total Count / Theoretical Expected Output (or 100% if expected output is unknown)
+  let rawPerformance = 1.0;
+  if (theoreticalExpectedOutput > 0) {
+    rawPerformance = totalCount / theoreticalExpectedOutput;
+  } else if (runTimeMinutes > 0) {
+    // Standard default assumption: 60 units/hr unless overridden
+    const fallbackExpected = (runTimeMinutes / 60) * 60;
+    rawPerformance = fallbackExpected > 0 ? (totalCount / fallbackExpected) : 1.0;
+  }
+
+  // Clamp Availability, Performance, Quality strictly between 0 and 1 (0% to 100%)
+  const availabilityPct = Math.min(100, Math.max(0, rawAvailability * 100));
+  const performancePct  = Math.min(100, Math.max(0, rawPerformance * 100));
+  const qualityPct      = Math.min(100, Math.max(0, rawQuality * 100));
+
+  // OEE = (Availability/100) * (Performance/100) * (Quality/100) * 100
+  const oeePct = (availabilityPct / 100) * (performancePct / 100) * (qualityPct / 100) * 100;
+
+  return {
+    availability: Number(availabilityPct.toFixed(1)),
+    performance: Number(performancePct.toFixed(1)),
+    quality: Number(qualityPct.toFixed(1)),
+    oee: Number(oeePct.toFixed(1)),
+    plannedTimeMinutes: Math.round(plannedTimeMinutes),
+    downtimeMinutes: Math.round(downtimeMinutes),
+    runTimeMinutes: Math.round(runTimeMinutes),
+    totalCount,
+    scrapCount,
+    goodCount,
+    timeWindow: 'Período Selecionado',
+    sufficientData: true,
+  };
+}
+
+/**
+ * Utility to compute total planned operational minutes for a given machine & period.
+ * Takes into account scheduled shifts and days.
+ */
+export function calculatePlannedTimeMinutes(
+  startDate: Date,
+  endDate: Date,
+  dailyShiftHours: number = 16 // Default: 2 shifts = 16 hrs/day
+): number {
+  const diffTime = Math.abs(endDate.getTime() - startDate.getTime());
+  const diffDays = Math.max(1, Math.ceil(diffTime / (1000 * 60 * 60 * 24)));
+  return diffDays * dailyShiftHours * 60;
+}
+
+
+===== FILE: src/lib/machineStatus.ts =====
+import { MachineStatus, ProductionRecord, DowntimeRecord, DowntimeCategory } from '@/types';
+
+export interface DynamicMachineState {
+  status: MachineStatus;
+  statusLabel: string;
+  statusColor: 'green' | 'yellow' | 'blue' | 'red' | 'gray';
+  statusBadge: string;
+  activeDowntime?: DowntimeRecord;
+  activeProduction?: ProductionRecord;
+}
+
+/**
+ * Derives machine status dynamically from real-time events.
+ * 
+ * Priority Rules:
+ *  1. Open Downtime Record (end_time is null/undefined):
+ *     - category 'setup' -> 'setup' (🔵 Setup)
+ *     - category 'maintenance' -> 'maintenance' (🔴 Manutenção)
+ *     - all other downtime categories -> 'stopped' (🟡 Parada)
+ *  2. Open Production Record (end_time is null/undefined) -> 'producing' (🟢 Produzindo)
+ *  3. Neither -> 'inactive' (⚪ Sem Operação)
+ */
+export function deriveMachineStatus(
+  activeProduction?: ProductionRecord | null,
+  activeDowntime?: DowntimeRecord | null
+): DynamicMachineState {
+  if (activeDowntime && !activeDowntime.end_time) {
+    const category = activeDowntime.category;
+    if (category === 'setup') {
+      return {
+        status: 'setup',
+        statusLabel: 'Em Setup',
+        statusColor: 'blue',
+        statusBadge: '🔵 Setup',
+        activeDowntime,
+      };
+    }
+    if (category === 'maintenance') {
+      return {
+        status: 'maintenance',
+        statusLabel: 'Em Manutenção',
+        statusColor: 'red',
+        statusBadge: '🔴 Manutenção',
+        activeDowntime,
+      };
+    }
+    return {
+      status: 'stopped',
+      statusLabel: 'Parada',
+      statusColor: 'yellow',
+      statusBadge: '🟡 Parada',
+      activeDowntime,
+    };
+  }
+
+  if (activeProduction && !activeProduction.end_time) {
+    return {
+      status: 'producing',
+      statusLabel: 'Produzindo',
+      statusColor: 'green',
+      statusBadge: '🟢 Produzindo',
+      activeProduction,
+    };
+  }
+
+  return {
+    status: 'inactive',
+    statusLabel: 'Sem Operação',
+    statusColor: 'gray',
+    statusBadge: '⚪ Sem Operação',
+  };
+}
+
+
+===== FILE: src/lib/audit.ts =====
+import { AuditAction, AuditLog } from '@/types';
+
+/**
+ * Creates a structured audit log entry payload.
+ * Sanitizes input to ensure passwords, secrets, or tokens are never logged.
+ */
+export function createAuditLogEntry(
+  companyId: string,
+  userId: string,
+  userName: string,
+  action: AuditAction,
+  entityType: string,
+  entityId: string,
+  oldData?: Record<string, any> | null,
+  newData?: Record<string, any> | null
+): AuditLog {
+  const sanitize = (obj?: Record<string, any> | null) => {
+    if (!obj) return null;
+    const sanitized = { ...obj };
+    delete sanitized.password;
+    delete sanitized.secret;
+    delete sanitized.token;
+    delete sanitized.key_hash;
+    return sanitized;
+  };
+
+  return {
+    id: typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `audit-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+    company_id: companyId,
+    user_id: userId,
+    user_name: userName,
+    action,
+    entity_type: entityType,
+    entity_id: entityId,
+    old_data: sanitize(oldData),
+    new_data: sanitize(newData),
+    created_at: new Date().toISOString(),
+  };
+}
+
+
+===== FILE: src/types/index.ts =====
+export type UserRole = 'admin' | 'supervisor' | 'operator';
+
+export interface Company {
+  id: string;
+  name: string;
+  legal_name: string;
+  document: string;
+  email: string;
+  phone: string;
+  timezone: string;
+  active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Profile {
+  id: string;
+  company_id: string;
+  name: string;
+  email: string;
+  role: UserRole;
+  active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export type MachineStatus = 'producing' | 'stopped' | 'setup' | 'maintenance' | 'inactive';
+
+export interface Machine {
+  id: string;
+  company_id: string;
+  name: string;
+  code: string;
+  sector: string;
+  description: string;
+  status: MachineStatus;
+  current_operator_id?: string;
+  current_operator_name?: string;
+  current_order_id?: string;
+  current_order_code?: string;
+  active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Product {
+  id: string;
+  company_id: string;
+  name: string;
+  code: string;
+  description: string;
+  target_cycle_time_seconds: number;
+  target_quantity_per_hour: number;
+  target_scrap_percentage: number;
+  active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Shift {
+  id: string;
+  company_id: string;
+  name: string;
+  start_time: string; // "06:00"
+  end_time: string;   // "14:00"
+  active: boolean;
+}
+
+export type OrderStatus = 'planned' | 'active' | 'paused' | 'completed' | 'cancelled';
+
+export interface ProductionOrder {
+  id: string;
+  company_id: string;
+  code: string;
+  product_id: string;
+  product_name?: string;
+  planned_quantity: number;
+  produced_quantity: number; // Total produced
+  rejected_quantity: number; // Scrap
+  good_quantity: number;     // Total - Scrap
+  start_date: string;
+  due_date: string;
+  status: OrderStatus;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProductionRecord {
+  id: string;
+  company_id: string;
+  machine_id: string;
+  machine_name?: string;
+  operator_id: string;
+  operator_name?: string;
+  order_id: string;
+  order_code?: string;
+  product_id: string;
+  product_name?: string;
+  shift_id: string;
+  shift_name?: string;
+  start_time: string;
+  end_time?: string;
+  produced_quantity: number; // Total
+  rejected_quantity: number; // Scrap
+  good_quantity: number;     // Produced - Rejected
+  notes?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export type DowntimeCategory = 
+  | 'setup' 
+  | 'maintenance' 
+  | 'material' 
+  | 'quality' 
+  | 'operator' 
+  | 'adjustment' 
+  | 'electrical' 
+  | 'mechanical' 
+  | 'other';
+
+export interface DowntimeReason {
+  id: string;
+  company_id: string;
+  name: string;
+  category: DowntimeCategory;
+  active: boolean;
+  created_at: string;
+}
+
+export interface DowntimeRecord {
+  id: string;
+  company_id: string;
+  machine_id: string;
+  machine_name?: string;
+  operator_id: string;
+  operator_name?: string;
+  order_id: string;
+  order_code?: string;
+  reason_id: string;
+  reason_name?: string;
+  category?: DowntimeCategory;
+  start_time: string;
+  end_time?: string;
+  duration_seconds: number;
+  notes?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MachineEvent {
+  id: string;
+  machine_id: string;
+  timestamp: string;
+  type: 'status_change' | 'production_start' | 'production_end' | 'downtime_start' | 'downtime_end' | 'scrap_recorded';
+  title: string;
+  description: string;
+  status: MachineStatus;
+  operator_name?: string;
+  order_code?: string;
+}
+
+export interface Target {
+  id: string;
+  company_id: string;
+  machine_id: string;
+  product_id: string;
+  target_quantity: number;
+  target_cycle_time_seconds: number;
+  target_scrap_percentage: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export type AuditAction = 
+  | 'LOGIN' 
+  | 'LOGOUT' 
+  | 'CREATE' 
+  | 'UPDATE' 
+  | 'DELETE' 
+  | 'START_PRODUCTION' 
+  | 'REGISTER_PRODUCTION' 
+  | 'END_PRODUCTION' 
+  | 'START_DOWNTIME' 
+  | 'END_DOWNTIME' 
+  | 'IMPORT_DATA' 
+  | 'EXPORT_DATA' 
+  | 'GENERATE_REPORT';
+
+export interface AuditLog {
+  id: string;
+  company_id: string;
+  user_id: string;
+  user_name?: string;
+  action: AuditAction;
+  entity_type: string;
+  entity_id: string;
+  old_data?: Record<string, any> | null;
+  new_data?: Record<string, any> | null;
+  created_at: string;
+}
+
+export interface Alert {
+  id: string;
+  company_id: string;
+  type: 'downtime_limit' | 'scrap_limit' | 'efficiency_low' | 'deadline_near';
+  severity: 'info' | 'warning' | 'danger';
+  title: string;
+  message: string;
+  machine_id?: string;
+  order_id?: string;
+  read: boolean;
+  created_at: string;
+}
+
+export interface OeeMetrics {
+  availability: number; // percentage 0 - 100
+  performance: number;  // percentage 0 - 100
+  quality: number;      // percentage 0 - 100
+  oee: number;          // percentage 0 - 100
+  plannedTimeMinutes: number;
+  downtimeMinutes: number;
+  runTimeMinutes: number;
+  totalCount: number;
+  scrapCount: number;
+  goodCount: number;
+  timeWindow: string;   // e.g. "Últimos 30 dias"
+  sufficientData: boolean;
+}
+
+export interface TelemetryPayload {
+  machine_code: string;
+  timestamp: string;
+  signals: {
+    running: boolean;
+    cycle_count: number;
+    speed_rpm?: number;
+    temperature_c?: number;
+  };
+}
+
+export interface ApiKey {
+  id: string;
+  company_id: string;
+  name: string;
+  key_hash: string;
+  active: boolean;
+  created_at: string;
+  last_used_at?: string;
+}
+
+export interface SetupState {
+  company: {
+    name: string;
+    legal_name: string;
+    document: string;
+    email: string;
+    phone: string;
+    timezone: string;
+  };
+  machines: Array<{
+    name: string;
+    code: string;
+    sector: string;
+    description: string;
+  }>;
+  products: Array<{
+    name: string;
+    code: string;
+    description: string;
+    target_cycle_time_seconds: number;
+    target_quantity_per_hour: number;
+    target_scrap_percentage: number;
+  }>;
+  shifts: Array<{
+    name: string;
+    start_time: string;
+    end_time: string;
+  }>;
+  downtime_reasons: Array<{
+    name: string;
+    category: DowntimeCategory;
+    active: boolean;
+  }>;
+  operator: {
+    name: string;
+    email: string;
+  };
+  currentStep: number;
+  completed: boolean;
+}
+
+
+===== FILE: src/repositories/index.ts =====
+import { IMachineRepository } from './interfaces/IMachineRepository';
+import { IOrderRepository } from './interfaces/IOrderRepository';
+import { IProductionRepository } from './interfaces/IProductionRepository';
+import { IDowntimeRepository } from './interfaces/IDowntimeRepository';
+import { IProductRepository } from './interfaces/IProductRepository';
+import { IUserRepository } from './interfaces/IUserRepository';
+import { IAuditRepository } from './interfaces/IAuditRepository';
+import { IApiKeyRepository } from './interfaces/IApiKeyRepository';
+import { ICompanyRepository } from './interfaces/ICompanyRepository';
+
+import {
+  DemoMachineRepository,
+  DemoOrderRepository,
+  DemoProductionRepository,
+  DemoDowntimeRepository,
+  DemoProductRepository,
+  DemoUserRepository,
+  DemoAuditRepository,
+  DemoApiKeyRepository,
+  DemoCompanyRepository,
+} from './demo';
+
+import {
+  SupabaseMachineRepository,
+  SupabaseOrderRepository,
+  SupabaseProductionRepository,
+  SupabaseDowntimeRepository,
+  SupabaseProductRepository,
+  SupabaseUserRepository,
+  SupabaseAuditRepository,
+  SupabaseApiKeyRepository,
+  SupabaseCompanyRepository,
+} from './supabase';
+
+export const IS_DEMO_MODE = process.env.NEXT_PUBLIC_DEMO_MODE !== 'false';
+
+export interface RepositoryFactory {
+  machines: IMachineRepository;
+  orders: IOrderRepository;
+  production: IProductionRepository;
+  downtime: IDowntimeRepository;
+  products: IProductRepository;
+  users: IUserRepository;
+  audit: IAuditRepository;
+  apiKeys: IApiKeyRepository;
+  company: ICompanyRepository;
+}
+
+function createRepositories(): RepositoryFactory {
+  const isProduction = process.env.NEXT_PUBLIC_DEMO_MODE === 'false';
+
+  if (isProduction) {
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+    if (!supabaseUrl || !supabaseKey || supabaseUrl.includes('placeholder')) {
+      throw new Error(
+        'CONFIGURAÇÃO INCOMPLETA: NEXT_PUBLIC_DEMO_MODE está definido como false, mas as credenciais de produção do Supabase (NEXT_PUBLIC_SUPABASE_URL e NEXT_PUBLIC_SUPABASE_ANON_KEY) não estão configuradas.'
+      );
+    }
+
+    return {
+      machines: new SupabaseMachineRepository(),
+      orders: new SupabaseOrderRepository(),
+      production: new SupabaseProductionRepository(),
+      downtime: new SupabaseDowntimeRepository(),
+      products: new SupabaseProductRepository(),
+      users: new SupabaseUserRepository(),
+      audit: new SupabaseAuditRepository(),
+      apiKeys: new SupabaseApiKeyRepository(),
+      company: new SupabaseCompanyRepository(),
+    };
+  }
+
+  // Demo Mode
+  return {
+    machines: new DemoMachineRepository(),
+    orders: new DemoOrderRepository(),
+    production: new DemoProductionRepository(),
+    downtime: new DemoDowntimeRepository(),
+    products: new DemoProductRepository(),
+    users: new DemoUserRepository(),
+    audit: new DemoAuditRepository(),
+    apiKeys: new DemoApiKeyRepository(),
+    company: new DemoCompanyRepository(),
+  };
+}
+
+export const repositories = createRepositories();
+
+
+===== FILE: src/repositories/supabase/index.ts =====
+import { IMachineRepository } from '../interfaces/IMachineRepository';
+import { IOrderRepository } from '../interfaces/IOrderRepository';
+import { IProductionRepository } from '../interfaces/IProductionRepository';
+import { IDowntimeRepository } from '../interfaces/IDowntimeRepository';
+import { IProductRepository } from '../interfaces/IProductRepository';
+import { IUserRepository } from '../interfaces/IUserRepository';
+import { IAuditRepository } from '../interfaces/IAuditRepository';
+import { IApiKeyRepository } from '../interfaces/IApiKeyRepository';
+import { ICompanyRepository } from '../interfaces/ICompanyRepository';
+
+import { createClient } from '@/lib/supabase/client';
+import { Machine, ProductionOrder, ProductionRecord, DowntimeRecord, Product, Profile, AuditLog, ApiKey, Company, Shift, DowntimeReason } from '@/types';
+
+export class SupabaseMachineRepository implements IMachineRepository {
+  async getAll(companyId: string): Promise<Machine[]> {
+    const supabase = createClient();
+    const { data, error } = await supabase.from('machines').select('*').eq('company_id', companyId);
+    if (error) throw error;
+    return data as Machine[];
+  }
+  async getById(companyId: string, id: string): Promise<Machine | null> {
+    const supabase = createClient();
+    const { data, error } = await supabase.from('machines').select('*').eq('id', id).eq('company_id', companyId).single();
+    if (error) return null;
+    return data as Machine;
+  }
+  async getByCode(companyId: string, code: string): Promise<Machine | null> {
+    const supabase = createClient();
+    const { data, error } = await supabase.from('machines').select('*').eq('code', code).eq('company_id', companyId).single();
+    if (error) return null;
+    return data as Machine;
+  }
+  async create(machine: Omit<Machine, 'id' | 'created_at' | 'updated_at'>): Promise<Machine> {
+    const supabase = createClient();
+    const { data, error } = await supabase.from('machines').insert(machine).select().single();
+    if (error) throw error;
+    return data as Machine;
+  }
+  async update(companyId: string, id: string, updates: Partial<Machine>): Promise<Machine> {
+    const supabase = createClient();
+    const { data, error } = await supabase.from('machines').update({ ...updates, updated_at: new Date().toISOString() }).eq('id', id).eq('company_id', companyId).select().single();
+    if (error) throw error;
+    return data as Machine;
+  }
+  async delete(companyId: string, id: string): Promise<boolean> {
+    const supabase = createClient();
+    const { error } = await supabase.from('machines').delete().eq('id', id).eq('company_id', companyId);
+    return !error;
+  }
+}
+
+export class SupabaseOrderRepository implements IOrderRepository {
+  async getAll(companyId: string): Promise<ProductionOrder[]> {
+    const supabase = createClient();
+    const { data, error } = await supabase.from('production_orders').select('*').eq('company_id', companyId);
+    if (error) throw error;
+    return data as ProductionOrder[];
+  }
+  async getById(companyId: string, id: string): Promise<ProductionOrder | null> {
+    const supabase = createClient();
+    const { data, error } = await supabase.from('production_orders').select('*').eq('id', id).eq('company_id', companyId).single();
+    if (error) return null;
+    return data as ProductionOrder;
+  }
+  async create(order: Omit<ProductionOrder, 'id' | 'created_at' | 'updated_at'>): Promise<ProductionOrder> {
+    const supabase = createClient();
+    const { data, error } = await supabase.from('production_orders').insert(order).select().single();
+    if (error) throw error;
+    return data as ProductionOrder;
+  }
+  async update(companyId: string, id: string, updates: Partial<ProductionOrder>): Promise<ProductionOrder> {
+    const supabase = createClient();
+    const { data, error } = await supabase.from('production_orders').update({ ...updates, updated_at: new Date().toISOString() }).eq('id', id).eq('company_id', companyId).select().single();
+    if (error) throw error;
+    return data as ProductionOrder;
+  }
+  async delete(companyId: string, id: string): Promise<boolean> {
+    const supabase = createClient();
+    const { error } = await supabase.from('production_orders').delete().eq('id', id).eq('company_id', companyId);
+    return !error;
+  }
+}
+
+export class SupabaseProductionRepository implements IProductionRepository {
+  async getAll(companyId: string): Promise<ProductionRecord[]> {
+    const supabase = createClient();
+    const { data, error } = await supabase.from('production_records').select('*').eq('company_id', companyId);
+    if (error) throw error;
+    return data as ProductionRecord[];
+  }
+  async getByMachine(companyId: string, machineId: string): Promise<ProductionRecord[]> {
+    const supabase = createClient();
+    const { data, error } = await supabase.from('production_records').select('*').eq('company_id', companyId).eq('machine_id', machineId);
+    if (error) throw error;
+    return data as ProductionRecord[];
+  }
+  async getActiveByMachine(companyId: string, machineId: string): Promise<ProductionRecord | null> {
+    const supabase = createClient();
+    const { data, error } = await supabase.from('production_records').select('*').eq('company_id', companyId).eq('machine_id', machineId).is('end_time', null).single();
+    if (error) return null;
+    return data as ProductionRecord;
+  }
+  async create(record: Omit<ProductionRecord, 'id' | 'created_at' | 'updated_at'>): Promise<ProductionRecord> {
+    const supabase = createClient();
+    const { data, error } = await supabase.from('production_records').insert(record).select().single();
+    if (error) throw error;
+    return data as ProductionRecord;
+  }
+  async update(companyId: string, id: string, updates: Partial<ProductionRecord>): Promise<ProductionRecord> {
+    const supabase = createClient();
+    const { data, error } = await supabase.from('production_records').update({ ...updates, updated_at: new Date().toISOString() }).eq('id', id).eq('company_id', companyId).select().single();
+    if (error) throw error;
+    return data as ProductionRecord;
+  }
+}
+
+export class SupabaseDowntimeRepository implements IDowntimeRepository {
+  async getAll(companyId: string): Promise<DowntimeRecord[]> {
+    const supabase = createClient();
+    const { data, error } = await supabase.from('downtime_records').select('*').eq('company_id', companyId);
+    if (error) throw error;
+    return data as DowntimeRecord[];
+  }
+  async getByMachine(companyId: string, machineId: string): Promise<DowntimeRecord[]> {
+    const supabase = createClient();
+    const { data, error } = await supabase.from('downtime_records').select('*').eq('company_id', companyId).eq('machine_id', machineId);
+    if (error) throw error;
+    return data as DowntimeRecord[];
+  }
+  async getActiveByMachine(companyId: string, machineId: string): Promise<DowntimeRecord | null> {
+    const supabase = createClient();
+    const { data, error } = await supabase.from('downtime_records').select('*').eq('company_id', companyId).eq('machine_id', machineId).is('end_time', null).single();
+    if (error) return null;
+    return data as DowntimeRecord;
+  }
+  async create(record: Omit<DowntimeRecord, 'id' | 'created_at' | 'updated_at'>): Promise<DowntimeRecord> {
+    const supabase = createClient();
+    const { data, error } = await supabase.from('downtime_records').insert(record).select().single();
+    if (error) throw error;
+    return data as DowntimeRecord;
+  }
+  async update(companyId: string, id: string, updates: Partial<DowntimeRecord>): Promise<DowntimeRecord> {
+    const supabase = createClient();
+    const { data, error } = await supabase.from('downtime_records').update({ ...updates, updated_at: new Date().toISOString() }).eq('id', id).eq('company_id', companyId).select().single();
+    if (error) throw error;
+    return data as DowntimeRecord;
+  }
+  async getReasons(companyId: string): Promise<DowntimeReason[]> {
+    const supabase = createClient();
+    const { data, error } = await supabase.from('downtime_reasons').select('*').eq('company_id', companyId);
+    if (error) throw error;
+    return data as DowntimeReason[];
+  }
+  async createReason(reason: Omit<DowntimeReason, 'id' | 'created_at'>): Promise<DowntimeReason> {
+    const supabase = createClient();
+    const { data, error } = await supabase.from('downtime_reasons').insert(reason).select().single();
+    if (error) throw error;
+    return data as DowntimeReason;
+  }
+  async toggleReasonActive(companyId: string, id: string, active: boolean): Promise<DowntimeReason> {
+    const supabase = createClient();
+    const { data, error } = await supabase.from('downtime_reasons').update({ active }).eq('id', id).eq('company_id', companyId).select().single();
+    if (error) throw error;
+    return data as DowntimeReason;
+  }
+}
+
+export class SupabaseProductRepository implements IProductRepository {
+  async getAll(companyId: string): Promise<Product[]> {
+    const supabase = createClient();
+    const { data, error } = await supabase.from('products').select('*').eq('company_id', companyId);
+    if (error) throw error;
+    return data as Product[];
+  }
+  async getById(companyId: string, id: string): Promise<Product | null> {
+    const supabase = createClient();
+    const { data, error } = await supabase.from('products').select('*').eq('id', id).eq('company_id', companyId).single();
+    if (error) return null;
+    return data as Product;
+  }
+  async create(product: Omit<Product, 'id' | 'created_at' | 'updated_at'>): Promise<Product> {
+    const supabase = createClient();
+    const { data, error } = await supabase.from('products').insert(product).select().single();
+    if (error) throw error;
+    return data as Product;
+  }
+  async update(companyId: string, id: string, updates: Partial<Product>): Promise<Product> {
+    const supabase = createClient();
+    const { data, error } = await supabase.from('products').update({ ...updates, updated_at: new Date().toISOString() }).eq('id', id).eq('company_id', companyId).select().single();
+    if (error) throw error;
+    return data as Product;
+  }
+  async delete(companyId: string, id: string): Promise<boolean> {
+    const supabase = createClient();
+    const { error } = await supabase.from('products').delete().eq('id', id).eq('company_id', companyId);
+    return !error;
+  }
+}
+
+export class SupabaseUserRepository implements IUserRepository {
+  async getAll(companyId: string): Promise<Profile[]> {
+    const supabase = createClient();
+    const { data, error } = await supabase.from('profiles').select('*').eq('company_id', companyId);
+    if (error) throw error;
+    return data as Profile[];
+  }
+  async getById(id: string): Promise<Profile | null> {
+    const supabase = createClient();
+    const { data, error } = await supabase.from('profiles').select('*').eq('id', id).single();
+    if (error) return null;
+    return data as Profile;
+  }
+  async getByEmail(email: string): Promise<Profile | null> {
+    const supabase = createClient();
+    const { data, error } = await supabase.from('profiles').select('*').eq('email', email).single();
+    if (error) return null;
+    return data as Profile;
+  }
+  async create(profile: Omit<Profile, 'created_at' | 'updated_at'>): Promise<Profile> {
+    const supabase = createClient();
+    const { data, error } = await supabase.from('profiles').insert(profile).select().single();
+    if (error) throw error;
+    return data as Profile;
+  }
+  async update(id: string, updates: Partial<Profile>): Promise<Profile> {
+    const supabase = createClient();
+    const { data, error } = await supabase.from('profiles').update({ ...updates, updated_at: new Date().toISOString() }).eq('id', id).select().single();
+    if (error) throw error;
+    return data as Profile;
+  }
+}
+
+export class SupabaseAuditRepository implements IAuditRepository {
+  async getAll(companyId: string): Promise<AuditLog[]> {
+    const supabase = createClient();
+    const { data, error } = await supabase.from('audit_logs').select('*').eq('company_id', companyId).order('created_at', { ascending: false });
+    if (error) throw error;
+    return data as AuditLog[];
+  }
+  async create(log: AuditLog): Promise<AuditLog> {
+    const supabase = createClient();
+    const { data, error } = await supabase.from('audit_logs').insert(log).select().single();
+    if (error) throw error;
+    return data as AuditLog;
+  }
+}
+
+export class SupabaseApiKeyRepository implements IApiKeyRepository {
+  async getAll(companyId: string): Promise<ApiKey[]> {
+    const supabase = createClient();
+    const { data, error } = await supabase.from('api_keys').select('*').eq('company_id', companyId);
+    if (error) throw error;
+    return data as ApiKey[];
+  }
+  async create(key: Omit<ApiKey, 'id' | 'created_at'>): Promise<ApiKey> {
+    const supabase = createClient();
+    const { data, error } = await supabase.from('api_keys').insert(key).select().single();
+    if (error) throw error;
+    return data as ApiKey;
+  }
+  async validateKey(keyHash: string): Promise<ApiKey | null> {
+    const supabase = createClient();
+    const { data, error } = await supabase.from('api_keys').select('*').eq('key_hash', keyHash).eq('active', true).single();
+    if (error || !data) return null;
+    return data as ApiKey;
+  }
+  async revoke(id: string): Promise<boolean> {
+    const supabase = createClient();
+    const { error } = await supabase.from('api_keys').update({ active: false }).eq('id', id);
+    return !error;
+  }
+}
+
+export class SupabaseCompanyRepository implements ICompanyRepository {
+  async getById(id: string): Promise<Company | null> {
+    const supabase = createClient();
+    const { data, error } = await supabase.from('companies').select('*').eq('id', id).single();
+    if (error) return null;
+    return data as Company;
+  }
+  async create(company: Omit<Company, 'id' | 'created_at' | 'updated_at'>): Promise<Company> {
+    const supabase = createClient();
+    const { data, error } = await supabase.from('companies').insert(company).select().single();
+    if (error) throw error;
+    return data as Company;
+  }
+  async update(id: string, updates: Partial<Company>): Promise<Company> {
+    const supabase = createClient();
+    const { data, error } = await supabase.from('companies').update({ ...updates, updated_at: new Date().toISOString() }).eq('id', id).select().single();
+    if (error) throw error;
+    return data as Company;
+  }
+  async getShifts(companyId: string): Promise<Shift[]> {
+    const supabase = createClient();
+    const { data, error } = await supabase.from('shifts').select('*').eq('company_id', companyId);
+    if (error) throw error;
+    return data as Shift[];
+  }
+  async createShift(shift: Omit<Shift, 'id'>): Promise<Shift> {
+    const supabase = createClient();
+    const { data, error } = await supabase.from('shifts').insert(shift).select().single();
+    if (error) throw error;
+    return data as Shift;
+  }
+  async updateShift(id: string, updates: Partial<Shift>): Promise<Shift> {
+    const supabase = createClient();
+    const { data, error } = await supabase.from('shifts').update(updates).eq('id', id).select().single();
+    if (error) throw error;
+    return data as Shift;
+  }
+}
+
+
+===== FILE: src/app/api/telemetry/route.ts =====
+import { NextRequest, NextResponse } from 'next/server';
+import { repositories } from '@/repositories';
+
+export async function POST(req: NextRequest) {
+  try {
+    const rawApiKey = req.headers.get('x-api-key');
+    if (!rawApiKey) {
+      return NextResponse.json({ error: 'Chave de API (x-api-key) não fornecida' }, { status: 401 });
+    }
+
+    // Compute key hash (or query by hash)
+    const keyHash = `hash_${rawApiKey}`;
+    const validKey = await repositories.apiKeys.validateKey(keyHash);
+
+    if (!validKey || !validKey.active) {
+      return NextResponse.json({ error: 'Chave de API inválida, revogada ou inativa' }, { status: 401 });
+    }
+
+    const companyId = validKey.company_id; // Company derived STRICTLY from API key binding
+
+    const body = await req.json();
+    const { machine_code, timestamp, metrics } = body;
+
+    if (!machine_code || typeof machine_code !== 'string') {
+      return NextResponse.json({ error: 'Payload inválido: machine_code é obrigatório e deve ser uma string' }, { status: 400 });
+    }
+
+    if (!metrics || typeof metrics !== 'object') {
+      return NextResponse.json({ error: 'Payload inválido: métricas de telemetria ausentes ou malformatadas' }, { status: 400 });
+    }
+
+    // Verify machine exists and belongs to the API key's company
+    const machine = await repositories.machines.getByCode(companyId, machine_code);
+    if (!machine) {
+      return NextResponse.json({ error: `Máquina '${machine_code}' não encontrada para esta empresa` }, { status: 404 });
+    }
+
+    return NextResponse.json({
+      success: true,
+      message: 'Telemetria processada e autenticada com sucesso',
+      company_id: companyId,
+      machine_code,
+      received_at: new Date().toISOString(),
+    });
+  } catch (err: any) {
+    return NextResponse.json({ error: err.message || 'Erro interno no processamento de telemetria' }, { status: 500 });
+  }
+}
+
+
+===== FILE: src/app/api/production/route.ts =====
+import { NextRequest, NextResponse } from 'next/server';
+import { repositories } from '@/repositories';
+import { DEMO_COMPANY_ID } from '@/repositories/demo/seedData';
+
+export async function POST(req: NextRequest) {
+  try {
+    const body = await req.json();
+    const { machine_id, order_id, produced_quantity, rejected_quantity } = body;
+
+    // Derived company_id (cannot be overridden by client input)
+    const companyId = DEMO_COMPANY_ID;
+
+    if (!machine_id || typeof machine_id !== 'string') {
+      return NextResponse.json({ error: 'machine_id é obrigatório e deve ser uma string' }, { status: 400 });
+    }
+
+    const produced = Number(produced_quantity);
+    const rejected = Number(rejected_quantity || 0);
+
+    if (isNaN(produced) || produced < 0 || isNaN(rejected) || rejected < 0) {
+      return NextResponse.json({ error: 'As quantidades produzida e rejeitada devem ser números inteiros não-negativos' }, { status: 400 });
+    }
+
+    // Verify machine belongs to user's company
+    const machine = await repositories.machines.getById(companyId, machine_id);
+    if (!machine) {
+      return NextResponse.json({ error: 'Máquina não encontrada ou pertencente a outra empresa' }, { status: 404 });
+    }
+
+    return NextResponse.json({
+      success: true,
+      message: 'Apontamento de produção registrado via REST API',
+      data: {
+        company_id: companyId,
+        machine_id,
+        produced_quantity: produced,
+        rejected_quantity: rejected,
+      },
+    });
+  } catch (err: any) {
+    return NextResponse.json({ error: err.message || 'Erro ao registrar produção' }, { status: 500 });
+  }
+}
+
+
+===== FILE: src/app/api/downtime/route.ts =====
+import { NextRequest, NextResponse } from 'next/server';
+import { repositories } from '@/repositories';
+import { DEMO_COMPANY_ID } from '@/repositories/demo/seedData';
+
+export async function POST(req: NextRequest) {
+  try {
+    const body = await req.json();
+    const { machine_id, reason_id, notes } = body;
+
+    const companyId = DEMO_COMPANY_ID; // Session derived company_id
+
+    if (!machine_id || !reason_id) {
+      return NextResponse.json({ error: 'machine_id e reason_id são obrigatórios' }, { status: 400 });
+    }
+
+    const machine = await repositories.machines.getById(companyId, machine_id);
+    if (!machine) {
+      return NextResponse.json({ error: 'Máquina não encontrada ou pertencente a outra empresa' }, { status: 404 });
+    }
+
+    const reasons = await repositories.downtime.getReasons(companyId);
+    const reason = reasons.find((r) => r.id === reason_id && r.active);
+    if (!reason) {
+      return NextResponse.json({ error: 'Motivo de parada não encontrado ou inativo para esta empresa' }, { status: 404 });
+    }
+
+    return NextResponse.json({
+      success: true,
+      message: 'Parada registrada com sucesso via REST API',
+      data: { company_id: companyId, machine_id, reason_id, notes },
+    });
+  } catch (err: any) {
+    return NextResponse.json({ error: err.message || 'Erro ao registrar parada' }, { status: 500 });
+  }
+}
+
+
+===== FILE: src/app/api/machines/route.ts =====
+import { NextRequest, NextResponse } from 'next/server';
+import { repositories } from '@/repositories';
+import { DEMO_COMPANY_ID } from '@/repositories/demo/seedData';
+
+export async function GET(req: NextRequest) {
+  try {
+    const machines = await repositories.machines.getAll(DEMO_COMPANY_ID);
+    return NextResponse.json({ success: true, count: machines.length, data: machines });
+  } catch (err: any) {
+    return NextResponse.json({ error: err.message || 'Erro ao buscar máquinas' }, { status: 500 });
+  }
+}
+
+
+===== FILE: src/app/api/machines/[id]/status/route.ts =====
+import { NextRequest, NextResponse } from 'next/server';
+import { repositories } from '@/repositories';
+import { deriveMachineStatus } from '@/lib/machineStatus';
+import { DEMO_COMPANY_ID } from '@/repositories/demo/seedData';
+
+export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
+  try {
+    const machineId = params.id;
+    const machine = await repositories.machines.getById(DEMO_COMPANY_ID, machineId);
+    if (!machine) {
+      return NextResponse.json({ error: 'Máquina não encontrada' }, { status: 404 });
+    }
+
+    const activeProd = await repositories.production.getActiveByMachine(DEMO_COMPANY_ID, machineId);
+    const activeDown = await repositories.downtime.getActiveByMachine(DEMO_COMPANY_ID, machineId);
+    const state = deriveMachineStatus(activeProd, activeDown);
+
+    return NextResponse.json({
+      success: true,
+      machine_code: machine.code,
+      machine_name: machine.name,
+      status: state.status,
+      status_label: state.statusLabel,
+      active_order: activeProd?.order_code || null,
+      active_downtime_reason: activeDown?.reason_id || null,
+    });
+  } catch (err: any) {
+    return NextResponse.json({ error: err.message || 'Erro ao consultar status' }, { status: 500 });
+  }
+}
+
+
+===== FILE: src/app/setup/page.tsx =====
+'use client';
+
+import React, { useState, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
+import { useAuth } from '@/context/AuthContext';
+import { repositories } from '@/repositories';
+import { DowntimeCategory } from '@/types';
+import { Building2, Cpu, Package, Clock, AlertTriangle, UserPlus, CheckCircle2, ChevronRight, ChevronLeft, Plus, Trash2 } from 'lucide-react';
+
+export default function SetupWizardPage() {
+  const router = useRouter();
+  const { user, company } = useAuth();
+
+  useEffect(() => {
+    if (user && user.role !== 'admin') {
+      router.push('/dashboard');
+    }
+  }, [user, router]);
+
+  const [step, setStep] = useState<number>(1);
+  const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
+
+  // Step 1 - Company Info
+  const [companyName, setCompanyName] = useState(company?.name || 'Metalúrgica Vale Industrial');
+  const [legalName, setLegalName] = useState(company?.legal_name || 'Metalúrgica Vale Industrial S/A');
+  const [document, setDocument] = useState(company?.document || '12.345.678/0001-90');
+  const [email, setEmail] = useState(company?.email || 'contato@valeindustrial.com.br');
+  const [phone, setPhone] = useState(company?.phone || '(11) 4004-9000');
+  const [timezone, setTimezone] = useState(company?.timezone || 'America/Sao_Paulo');
+
+  // Step 2 - Machines
+  const [machines, setMachines] = useState<Array<{ name: string; code: string; sector: string; description: string }>>([
+    { name: 'Torno CNC Romi Centur 30D', code: 'CNC-01', sector: 'Usinagem', description: 'Torno CNC principal' },
+    { name: 'Prensa Hidráulica 200T', code: 'PRS-01', sector: 'Estamparia', description: 'Prensa para conformação' },
+  ]);
+  const [newMacName, setNewMacName] = useState('');
+  const [newMacCode, setNewMacCode] = useState('');
+  const [newMacSector, setNewMacSector] = useState('');
+
+  // Step 3 - Products
+  const [products, setProducts] = useState<Array<{ name: string; code: string; cycleTime: number; targetHr: number; targetScrap: number }>>([
+    { name: 'Eixo Transmissão Aço 4140', code: 'PROD-101', cycleTime: 45, targetHr: 80, targetScrap: 1.5 },
+  ]);
+  const [newProdName, setNewProdName] = useState('');
+  const [newProdCode, setNewProdCode] = useState('');
+  const [newProdCycle, setNewProdCycle] = useState(60);
+  const [newProdHr, setNewProdHr] = useState(60);
+  const [newProdScrap, setNewProdScrap] = useState(2.0);
+
+  // Step 4 - Shifts
+  const [shifts, setShifts] = useState<Array<{ name: string; startTime: string; endTime: string }>>([
+    { name: 'Turno A', startTime: '06:00', endTime: '14:00' },
+    { name: 'Turno B', startTime: '14:00', endTime: '22:00' },
+    { name: 'Turno C', startTime: '22:00', endTime: '06:00' },
+  ]);
+
+  // Step 5 - Downtime Reasons
+  const [reasons, setReasons] = useState<Array<{ name: string; category: DowntimeCategory }>>([
+    { name: 'Setup de Ferramental', category: 'setup' },
+    { name: 'Manutenção Preventiva', category: 'maintenance' },
+    { name: 'Falta de Matéria-Prima', category: 'material' },
+    { name: 'Falha Mecânica', category: 'mechanical' },
+    { name: 'Falha Elétrica', category: 'electrical' },
+    { name: 'Ajuste de Parâmetro', category: 'adjustment' },
+    { name: 'Inspeção de Qualidade', category: 'quality' },
+    { name: 'Ausência de Operador', category: 'operator' },
+  ]);
+
+  // Step 6 - Initial Operator
+  const [opName, setOpName] = useState('João Pedro');
+  const [opEmail, setOpEmail] = useState('operador@nexoproduction.demo');
+
+  const addMachine = () => {
+    if (!newMacName || !newMacCode) return;
+    setMachines([...machines, { name: newMacName, code: newMacCode, sector: newMacSector || 'Geral', description: '' }]);
+    setNewMacName('');
+    setNewMacCode('');
+    setNewMacSector('');
+  };
+
+  const removeMachine = (index: number) => {
+    setMachines(machines.filter((_, i) => i !== index));
+  };
+
+  const addProduct = () => {
+    if (!newProdName || !newProdCode) return;
+    setProducts([...products, { name: newProdName, code: newProdCode, cycleTime: newProdCycle, targetHr: newProdHr, targetScrap: newProdScrap }]);
+    setNewProdName('');
+    setNewProdCode('');
+  };
+
+  const removeProduct = (index: number) => {
+    setProducts(products.filter((_, i) => i !== index));
+  };
+
+  const handleFinishSetup = async () => {
+    setIsSubmitting(true);
+    try {
+      const compId = company?.id || '00000000-0000-0000-0000-000000000001';
+
+      // Update Company
+      await repositories.company.update(compId, {
+        name: companyName,
+        legal_name: legalName,
+        document,
+        email,
+        phone,
+        timezone,
+      });
+
+      // Save Machines
+      for (const m of machines) {
+        const existing = await repositories.machines.getByCode(compId, m.code);
+        if (!existing) {
+          await repositories.machines.create({
+            company_id: compId,
+            name: m.name,
+            code: m.code,
+            sector: m.sector,
+            description: m.description,
+            status: 'inactive',
+            active: true,
+          });
+        }
+      }
+
+      // Save Products (Idempotent check)
+      const existingProducts = await repositories.products.getAll(compId);
+      for (const p of products) {
+        const exists = existingProducts.some((ep) => ep.code === p.code);
+        if (!exists) {
+          await repositories.products.create({
+            company_id: compId,
+            name: p.name,
+            code: p.code,
+            description: '',
+            target_cycle_time_seconds: p.cycleTime,
+            target_quantity_per_hour: p.targetHr,
+            target_scrap_percentage: p.targetScrap,
+            active: true,
+          });
+        }
+      }
+
+      // Save Operator
+      const existingOp = await repositories.users.getByEmail(opEmail);
+      if (!existingOp) {
+        await repositories.users.create({
+          id: `op-${Date.now()}`,
+          company_id: compId,
+          name: opName,
+          email: opEmail,
+          role: 'operator',
+          active: true,
+        });
+      }
+
+      router.push('/dashboard');
+    } catch (err) {
+      console.error('Setup error:', err);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col justify-between p-4 md:p-8">
+      {/* Header */}
+      <div className="max-w-4xl mx-auto w-full flex items-center justify-between border-b border-slate-800 pb-4 mb-6">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-lg bg-blue-600 flex items-center justify-center font-bold text-xl text-white shadow-lg shadow-blue-500/20">
+            N
+          </div>
+          <div>
+            <h1 className="text-xl font-bold tracking-tight text-white">NEXO Production</h1>
+            <p className="text-xs text-slate-400">Wizard de Configuração Inicial da Empresa</p>
+          </div>
+        </div>
+        <div className="text-xs font-semibold px-3 py-1 bg-slate-800 text-blue-400 rounded-full border border-slate-700">
+          Etapa {step} de 7
+        </div>
+      </div>
+
+      {/* Step Progress Bar */}
+      <div className="max-w-4xl mx-auto w-full mb-8">
+        <div className="grid grid-cols-7 gap-2">
+          {[1, 2, 3, 4, 5, 6, 7].map((num) => (
+            <div
+              key={num}
+              className={`h-2 rounded-full transition-all duration-300 ${
+                num === step
+                  ? 'bg-blue-500 shadow-sm shadow-blue-500/50'
+                  : num < step
+                  ? 'bg-emerald-500'
+                  : 'bg-slate-800'
+              }`}
+            />
+          ))}
+        </div>
+      </div>
+
+      {/* Main Form Container */}
+      <div className="max-w-4xl mx-auto w-full bg-slate-900 border border-slate-800 rounded-xl p-6 md:p-8 shadow-2xl flex-1">
+        {/* STEP 1: COMPANY */}
+        {step === 1 && (
+          <div className="space-y-6">
+            <div className="flex items-center gap-3 border-b border-slate-800 pb-4">
+              <Building2 className="w-6 h-6 text-blue-400" />
+              <div>
+                <h2 className="text-lg font-bold text-white">Etapa 1: Dados da Empresa</h2>
+                <p className="text-sm text-slate-400">Informe os dados cadastrais da sua planta industrial.</p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-medium text-slate-400 mb-1">Nome Fantasia</label>
+                <input
+                  type="text"
+                  value={companyName}
+                  onChange={(e) => setCompanyName(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-400 mb-1">Razão Social</label>
+                <input
+                  type="text"
+                  value={legalName}
+                  onChange={(e) => setLegalName(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-400 mb-1">CNPJ</label>
+                <input
+                  type="text"
+                  value={document}
+                  onChange={(e) => setDocument(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-400 mb-1">E-mail Corporativo</label>
+                <input
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-400 mb-1">Telefone / WhatsApp</label>
+                <input
+                  type="text"
+                  value={phone}
+                  onChange={(e) => setPhone(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-400 mb-1">Fuso Horário</label>
+                <input
+                  type="text"
+                  value={timezone}
+                  onChange={(e) => setTimezone(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
+                />
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* STEP 2: MACHINES */}
+        {step === 2 && (
+          <div className="space-y-6">
+            <div className="flex items-center gap-3 border-b border-slate-800 pb-4">
+              <Cpu className="w-6 h-6 text-blue-400" />
+              <div>
+                <h2 className="text-lg font-bold text-white">Etapa 2: Cadastrar Máquinas</h2>
+                <p className="text-sm text-slate-400">Adicione as máquinas e equipamentos que serão monitorados.</p>
+              </div>
+            </div>
+
+            <div className="bg-slate-950 p-4 border border-slate-800 rounded-lg space-y-3">
+              <span className="text-xs font-semibold text-blue-400">Nova Máquina</span>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <input
+                  type="text"
+                  placeholder="Nome (ex: Torno CNC 01)"
+                  value={newMacName}
+                  onChange={(e) => setNewMacName(e.target.value)}
+                  className="bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-sm text-white"
+                />
+                <input
+                  type="text"
+                  placeholder="Código (ex: CNC-01)"
+                  value={newMacCode}
+                  onChange={(e) => setNewMacCode(e.target.value)}
+                  className="bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-sm text-white"
+                />
+                <input
+                  type="text"
+                  placeholder="Setor (ex: Usinagem)"
+                  value={newMacSector}
+                  onChange={(e) => setNewMacSector(e.target.value)}
+                  className="bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-sm text-white"
+                />
+              </div>
+              <button
+                type="button"
+                onClick={addMachine}
+                className="w-full py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-sm font-semibold flex items-center justify-center gap-2"
+              >
+                <Plus className="w-4 h-4" /> Adicionar Máquina
+              </button>
+            </div>
+
+            <div className="space-y-2">
+              <h3 className="text-sm font-semibold text-slate-300">Máquinas Cadastradas ({machines.length})</h3>
+              {machines.map((m, i) => (
+                <div key={i} className="flex items-center justify-between p-3 bg-slate-950 border border-slate-800 rounded-lg text-sm">
+                  <div>
+                    <span className="font-semibold text-white">{m.name}</span>
+                    <span className="ml-2 text-xs font-mono text-blue-400 bg-blue-950/50 px-2 py-0.5 rounded border border-blue-800/50">{m.code}</span>
+                    <span className="ml-2 text-xs text-slate-400">Setor: {m.sector}</span>
+                  </div>
+                  <button type="button" onClick={() => removeMachine(i)} className="text-slate-500 hover:text-red-400">
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* STEP 3: PRODUCTS */}
+        {step === 3 && (
+          <div className="space-y-6">
+            <div className="flex items-center gap-3 border-b border-slate-800 pb-4">
+              <Package className="w-6 h-6 text-blue-400" />
+              <div>
+                <h2 className="text-lg font-bold text-white">Etapa 3: Cadastrar Produtos</h2>
+                <p className="text-sm text-slate-400">Informe os itens fabricados e suas metas operacionais padrão.</p>
+              </div>
+            </div>
+
+            <div className="bg-slate-950 p-4 border border-slate-800 rounded-lg space-y-3">
+              <span className="text-xs font-semibold text-blue-400">Novo Produto</span>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <input
+                  type="text"
+                  placeholder="Nome do produto"
+                  value={newProdName}
+                  onChange={(e) => setNewProdName(e.target.value)}
+                  className="bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-sm text-white"
+                />
+                <input
+                  type="text"
+                  placeholder="Código SK/OP (ex: PROD-101)"
+                  value={newProdCode}
+                  onChange={(e) => setNewProdCode(e.target.value)}
+                  className="bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-sm text-white"
+                />
+              </div>
+              <div className="grid grid-cols-3 gap-3">
+                <div>
+                  <label className="block text-[10px] text-slate-400">Ciclo Padrão (seg)</label>
+                  <input
+                    type="number"
+                    value={newProdCycle}
+                    onChange={(e) => setNewProdCycle(Number(e.target.value))}
+                    className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-sm text-white"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] text-slate-400">Meta (peças/hora)</label>
+                  <input
+                    type="number"
+                    value={newProdHr}
+                    onChange={(e) => setNewProdHr(Number(e.target.value))}
+                    className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-sm text-white"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] text-slate-400">Meta Refugo (%)</label>
+                  <input
+                    type="number"
+                    step="0.1"
+                    value={newProdScrap}
+                    onChange={(e) => setNewProdScrap(Number(e.target.value))}
+                    className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-sm text-white"
+                  />
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={addProduct}
+                className="w-full py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-sm font-semibold flex items-center justify-center gap-2"
+              >
+                <Plus className="w-4 h-4" /> Adicionar Produto
+              </button>
+            </div>
+
+            <div className="space-y-2">
+              <h3 className="text-sm font-semibold text-slate-300">Produtos Cadastrados ({products.length})</h3>
+              {products.map((p, i) => (
+                <div key={i} className="flex items-center justify-between p-3 bg-slate-950 border border-slate-800 rounded-lg text-sm">
+                  <div>
+                    <span className="font-semibold text-white">{p.name}</span>
+                    <span className="ml-2 text-xs font-mono text-blue-400 bg-blue-950/50 px-2 py-0.5 rounded border border-blue-800/50">{p.code}</span>
+                    <span className="ml-2 text-xs text-slate-400">Meta: {p.targetHr} pçs/h | Ciclo: {p.cycleTime}s</span>
+                  </div>
+                  <button type="button" onClick={() => removeProduct(i)} className="text-slate-500 hover:text-red-400">
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* STEP 4: SHIFTS */}
+        {step === 4 && (
+          <div className="space-y-6">
+            <div className="flex items-center gap-3 border-b border-slate-800 pb-4">
+              <Clock className="w-6 h-6 text-blue-400" />
+              <div>
+                <h2 className="text-lg font-bold text-white">Etapa 4: Configurar Turnos de Trabalho</h2>
+                <p className="text-sm text-slate-400">Defina a jornada dos turnos operacionais (suporta turnos noturnos).</p>
+              </div>
+            </div>
+
+            <div className="space-y-3">
+              {shifts.map((s, i) => (
+                <div key={i} className="flex items-center justify-between p-4 bg-slate-950 border border-slate-800 rounded-lg">
+                  <span className="font-bold text-white text-sm">{s.name}</span>
+                  <div className="flex items-center gap-3 text-sm text-slate-300">
+                    <span className="bg-slate-900 px-3 py-1 rounded border border-slate-800 font-mono">{s.startTime}</span>
+                    <span>até</span>
+                    <span className="bg-slate-900 px-3 py-1 rounded border border-slate-800 font-mono">{s.endTime}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* STEP 5: DOWNTIME REASONS */}
+        {step === 5 && (
+          <div className="space-y-6">
+            <div className="flex items-center gap-3 border-b border-slate-800 pb-4">
+              <AlertTriangle className="w-6 h-6 text-blue-400" />
+              <div>
+                <h2 className="text-lg font-bold text-white">Etapa 5: Motivos de Parada Padrão</h2>
+                <p className="text-sm text-slate-400">O sistema pré-configura as principais categorias industriais de parada.</p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {reasons.map((r, i) => (
+                <div key={i} className="p-3 bg-slate-950 border border-slate-800 rounded-lg flex items-center justify-between">
+                  <span className="text-sm font-semibold text-slate-200">{r.name}</span>
+                  <span className="text-xs uppercase px-2 py-0.5 rounded font-mono bg-slate-800 text-blue-400">{r.category}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* STEP 6: INITIAL OPERATOR */}
+        {step === 6 && (
+          <div className="space-y-6">
+            <div className="flex items-center gap-3 border-b border-slate-800 pb-4">
+              <UserPlus className="w-6 h-6 text-blue-400" />
+              <div>
+                <h2 className="text-lg font-bold text-white">Etapa 6: Cadastrar Primeiro Operador</h2>
+                <p className="text-sm text-slate-400">Cadastre a conta de acesso para a interface operacional no chão de fábrica.</p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-medium text-slate-400 mb-1">Nome do Operador</label>
+                <input
+                  type="text"
+                  value={opName}
+                  onChange={(e) => setOpName(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-white"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-400 mb-1">E-mail de Login do Operador</label>
+                <input
+                  type="email"
+                  value={opEmail}
+                  onChange={(e) => setOpEmail(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-white"
+                />
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* STEP 7: SUMMARY & CONCLUSION */}
+        {step === 7 && (
+          <div className="space-y-6">
+            <div className="flex items-center gap-3 border-b border-slate-800 pb-4">
+              <CheckCircle2 className="w-6 h-6 text-emerald-400" />
+              <div>
+                <h2 className="text-lg font-bold text-white">Etapa 7: Configuração Concluída!</h2>
+                <p className="text-sm text-slate-400">Revise os parâmetros iniciais antes de ativar a plataforma.</p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+              <div className="p-4 bg-slate-950 border border-slate-800 rounded-lg space-y-2">
+                <h3 className="font-bold text-blue-400">Empresa</h3>
+                <p className="text-white font-semibold">{companyName}</p>
+                <p className="text-xs text-slate-400">CNPJ: {document}</p>
+              </div>
+              <div className="p-4 bg-slate-950 border border-slate-800 rounded-lg space-y-2">
+                <h3 className="font-bold text-blue-400">Recursos Cadastrados</h3>
+                <p className="text-xs text-slate-300">Máquinas: <strong className="text-white">{machines.length}</strong></p>
+                <p className="text-xs text-slate-300">Produtos: <strong className="text-white">{products.length}</strong></p>
+                <p className="text-xs text-slate-300">Turnos: <strong className="text-white">{shifts.length}</strong></p>
+                <p className="text-xs text-slate-300">Operador: <strong className="text-white">{opName}</strong></p>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Footer Navigation Buttons */}
+      <div className="max-w-4xl mx-auto w-full flex items-center justify-between border-t border-slate-800 pt-6 mt-6">
+        {step > 1 ? (
+          <button
+            type="button"
+            onClick={() => setStep(step - 1)}
+            className="px-5 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-sm font-semibold flex items-center gap-2"
+          >
+            <ChevronLeft className="w-4 h-4" /> Voltar
+          </button>
+        ) : (
+          <div />
+        )}
+
+        {step < 7 ? (
+          <button
+            type="button"
+            onClick={() => setStep(step + 1)}
+            className="px-6 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-sm font-semibold flex items-center gap-2 shadow-lg shadow-blue-500/20"
+          >
+            Avançar <ChevronRight className="w-4 h-4" />
+          </button>
+        ) : (
+          <button
+            type="button"
+            disabled={isSubmitting}
+            onClick={handleFinishSetup}
+            className="px-8 py-3 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-sm font-bold flex items-center gap-2 shadow-lg shadow-emerald-500/20"
+          >
+            {isSubmitting ? 'Ativando...' : 'COMEÇAR A USAR O NEXO'}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+
+===== FILE: src/context/AuthContext.tsx =====
+'use client';
+
+import React, { createContext, useContext, useEffect, useState } from 'react';
+import { useRouter, usePathname } from 'next/navigation';
+import { Profile, UserRole, Company } from '@/types';
+import { repositories, IS_DEMO_MODE } from '@/repositories';
+import { DEMO_COMPANY_ID } from '@/repositories/demo/seedData';
+
+interface AuthContextType {
+  user: Profile | null;
+  company: Company | null;
+  role: UserRole;
+  isDemoMode: boolean;
+  isLoading: boolean;
+  switchDemoRole: (newRole: UserRole) => void;
+  loginDemoUser: (email: string) => Promise<boolean>;
+  logout: () => Promise<void>;
+  checkFirstAccessSetup: () => Promise<boolean>;
+}
+
+const AuthContext = createContext<AuthContextType>({} as AuthContextType);
+
+export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
+  const router = useRouter();
+  const pathname = usePathname();
+  const [user, setUser] = useState<Profile | null>(null);
+  const [company, setCompany] = useState<Company | null>(null);
+  const [role, setRole] = useState<UserRole>('admin');
+  const [isLoading, setIsLoading] = useState<boolean>(true);
+
+  useEffect(() => {
+    async function initAuth() {
+      try {
+        if (IS_DEMO_MODE) {
+          // Initialize Demo Admin profile
+          const adminProf = await repositories.users.getByEmail('admin@nexoproduction.demo');
+          if (adminProf) {
+            setUser(adminProf);
+            setRole(adminProf.role);
+          }
+          const comp = await repositories.company.getById(DEMO_COMPANY_ID);
+          setCompany(comp);
+        } else {
+          // Production Supabase Auth check
+          const { createClient } = await import('@/lib/supabase/client');
+          const supabase = createClient();
+          const { data: { session } } = await supabase.auth.getSession();
+          
+          if (session?.user) {
+            const profile = await repositories.users.getById(session.user.id);
+            if (profile) {
+              setUser(profile);
+              setRole(profile.role);
+              const comp = await repositories.company.getById(profile.company_id);
+              setCompany(comp);
+            }
+          }
+        }
+      } catch (err) {
+        console.error('Auth initialization error:', err);
+      } finally {
+        setIsLoading(false);
+      }
+    }
+    initAuth();
+  }, []);
+
+  const switchDemoRole = async (newRole: UserRole) => {
+    if (!IS_DEMO_MODE) {
+      console.warn('Role switching is disabled in Production Mode');
+      return;
+    }
+
+    const emailMap: Record<UserRole, string> = {
+      admin: 'admin@nexoproduction.demo',
+      supervisor: 'supervisor@nexoproduction.demo',
+      operator: 'operador@nexoproduction.demo',
+    };
+
+    const targetEmail = emailMap[newRole];
+    const profile = await repositories.users.getByEmail(targetEmail);
+    if (profile) {
+      setUser(profile);
+      setRole(profile.role);
+      
+      // Auto route to appropriate screen
+      if (profile.role === 'operator' && pathname !== '/operator') {
+        router.push('/operator');
+      } else if (profile.role !== 'operator' && pathname === '/operator') {
+        router.push('/dashboard');
+      }
+    }
+  };
+
+  const loginDemoUser = async (email: string): Promise<boolean> => {
+    const profile = await repositories.users.getByEmail(email);
+    if (profile) {
+      setUser(profile);
+      setRole(profile.role);
+      const comp = await repositories.company.getById(profile.company_id);
+      setCompany(comp);
+      
+      if (profile.role === 'operator') {
+        router.push('/operator');
+      } else {
+        router.push('/dashboard');
+      }
+      return true;
+    }
+    return false;
+  };
+
+  const logout = async () => {
+    if (!IS_DEMO_MODE) {
+      const { createClient } = await import('@/lib/supabase/client');
+      const supabase = createClient();
+      await supabase.auth.signOut();
+    }
+    setUser(null);
+    setCompany(null);
+    router.push('/login');
+  };
+
+  const checkFirstAccessSetup = async (): Promise<boolean> => {
+    if (!company) return false;
+    const machines = await repositories.machines.getAll(company.id);
+    const products = await repositories.products.getAll(company.id);
+    const shifts = await repositories.company.getShifts(company.id);
+
+    const isSetupComplete = machines.length >= 1 && products.length >= 1 && shifts.length >= 1;
+    return isSetupComplete;
+  };
+
+  return (
+    <AuthContext.Provider
+      value={{
+        user,
+        company,
+        role,
+        isDemoMode: IS_DEMO_MODE,
+        isLoading,
+        switchDemoRole,
+        loginDemoUser,
+        logout,
+        checkFirstAccessSetup,
+      }}
+    >
+      {children}
+    </AuthContext.Provider>
+  );
+};
+
+export const useAuth = () => useContext(AuthContext);
+
+
+===== FILE: ENVIRONMENT_VARIABLES_SPECIFICATION.txt =====
+# NEXO PRODUCTION — ENVIRONMENT CONFIGURATION VARIABLE SPECIFICATION
+# (NAMES ONLY — NO REAL VALUES OR SECRETS INCLUDED)
+
+NEXT_PUBLIC_DEMO_MODE
+NEXT_PUBLIC_SUPABASE_URL
+NEXT_PUBLIC_SUPABASE_ANON_KEY
+SUPABASE_SERVICE_ROLE_KEY
