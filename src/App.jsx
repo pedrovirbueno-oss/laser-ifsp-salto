@@ -32,7 +32,8 @@ const MainContent = () => {
       setScannedOsCode(osParam);
       return;
     }
-    if (params.get('mode') === 'student' || params.get('portal') === 'student') {
+    const isAlunoDomain = window.location.hostname.startsWith('aluno.') || window.location.hostname.includes('aluno');
+    if (params.get('mode') === 'student' || params.get('portal') === 'student' || isAlunoDomain) {
       setPortalMode('STUDENT');
     }
   }, [setPortalMode]);
